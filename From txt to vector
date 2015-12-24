@@ -1,0 +1,177 @@
+# coding: utf-8
+# In[1]:
+
+from pyspark import SparkContext
+from pyspark import SparkConf
+
+from pyspark.mllib.feature import HashingTF, IDF
+from pyspark.sql import SQLContext
+from nltk.stem.porter import PorterStemmer
+
+import itertools
+import nltk
+import math
+
+# In[2]:
+
+english_punctuations = [',', '.', ':', ';', '?', '(', ')', '[', ']', '&', '!', '*', '@', '#', '$', '%']
+doc_num = 1000000
+class_num = 10
+vocab_size = 120000
+
+# In[3]:
+
+fp = open('data/citation_top100w_raw.txt')
+docs = []
+for index in range(doc_num):
+    fp.readline()
+    title = fp.readline()
+    fp.readline()
+    docs.append((title + fp.readline()).lower())
+fp.close()
+print docs[0]
+
+# In[4]:
+
+# Notice that spark.drive.memory can not set with SparkConf
+conf = SparkConf().setAppName('Data Process')        .set('spark.driver.maxResultSize', '30G')        .set('spark.executor.memory', '30G')        .set('spark.python.worker.memory', '30G')        .set('spark.driver.cores', 4)
+
+sc = SparkContext(conf=conf)
+
+# In[5]:
+
+docs_rdd = sc.parallelize(docs).map(        lambda doc: [PorterStemmer().stem_word(token).encode('utf-8') for token in nltk.word_tokenize(doc.decode('utf-8'))])
+docs_rdd = docs_rdd.map(lambda doc: filter(lambda token: token not in english_punctuations and not str.isdigit(token), doc))
+docs = docs_rdd.collect()
+print docs[0]
+
+# In[6]:
+
+word_freq = nltk.FreqDist(itertools.chain(*docs[:int(doc_num*0.6)]))
+
+# In[7]:
+
+vocab = word_freq.most_common(vocab_size)
+print "Using vocabulary size %d." % len(vocab)
+print "The least frequent word in our vocabulary is '%s' and appeared %d times." % (vocab[-1][0], vocab[-1][1])
+
+# In[8]:
+
+index_to_word = [word[0] for word in vocab]
+word_to_index = {word: index for index,word in enumerate(index_to_word)}
+word_set = set(index_to_word)
+
+# In[ ]:
+
+fp = open('data/dictionary.txt')
+fp.writelines([word+'\n' for word in index_to_word])
+fp.close()
+
+# In[9]:
+
+docs_rdd = docs_rdd.map(lambda doc: filter(lambda token: token in word_set, doc))
+print docs_rdd.first()
+
+# In[10]:
+
+def countFreq(doc):
+    freq = {}
+    for word in doc:
+        index = word_to_index[word]
+        freq[index] = freq.get(index, 0) + 1.0/len(doc)
+    return freq
+
+# In[11]:
+
+docs_freq = docs_rdd.map(countFreq).collect()
+print docs_freq[0]
+
+# In[12]:
+
+train_freq, dev_freq, test_freq =        docs_freq[:int(0.6*doc_num)], docs_freq[int(0.6*doc_num):int(0.8*doc_num)], docs_freq[int(0.8*doc_num):]
+
+# In[13]:
+
+fp = open('data/train_freq.txt', 'w')
+fp.writelines([' '.join([str(word)+':'+str(doc[word]) for word in doc])+'\n' for doc in train_freq])
+fp.close()
+
+fp = open('data/dev_freq.txt', 'w')
+fp.writelines([' '.join([str(word)+':'+str(doc[word]) for word in doc])+'\n' for doc in dev_freq])
+fp.close()
+
+fp = open('data/test_freq.txt', 'w')
+fp.writelines([' '.join([str(word)+':'+str(doc[word]) for word in doc])+'\n' for doc in test_freq])
+fp.close()
+
+# In[15]:
+
+idf = {}
+for doc in train_freq:
+    for word in doc:
+        idf[word] = idf.get(word, 0) + 1
+idf = {word: math.log(float(len(train_freq))/idf[word]) if idf[word] > 5 else 0.0 for word in idf}
+
+# In[16]:
+
+fp = open('data/train_tfidf.txt', 'w')
+fp.writelines([' '.join([str(word)+':'+str(doc[word]*idf[word]) for word in doc])+'\n' for doc in train_freq])
+fp.close()
+
+fp = open('data/dev_tfidf.txt', 'w')
+fp.writelines([' '.join([str(word)+':'+str(doc[word]*idf[word]) for word in doc])+'\n' for doc in dev_freq])
+fp.close()
+
+fp = open('data/test_tfidf.txt', 'w')
+fp.writelines([' '.join([str(word)+':'+str(doc[word]*idf[word]) for word in doc])+'\n' for doc in test_freq])
+fp.close()
+
+# In[ ]:
+
+fp = open('data/train_occur.txt', 'w')
+fp.writelines([' '.map(str, doc)+'\n' for doc in train_freq])
+fp.close()
+
+fp = open('data/dev_occur.txt', 'w')
+fp.writelines([' '.map(str, doc)+'\n' for doc in dev_freq])
+fp.close()
+
+fp = open('data/test_occur.txt', 'w')
+fp.writelines([' '.map(str, doc)+'\n' for doc in test_freq])
+fp.close()
+
+# In[27]:
+
+fp = open('data/label_citation_top100w.txt')
+doc_labels = [fp.readline().split()[2:] for index in range(doc_num)]
+fp.close()
+count = nltk.FreqDist(itertools.chain(*doc_labels))
+top_labels = count.most_common(class_num)
+for label in top_labels:
+    print label
+
+# In[28]:
+
+doc_labels = [[int(label[0] in labels) for label in top_labels] for labels in doc_labels]
+
+
+# In[29]:
+
+train_labels, dev_labels, test_labels =     doc_labels[:int(doc_num*0.6)], doc_labels[int(doc_num*0.6):int(doc_num*0.8)], doc_labels[int(doc_num*0.8):]
+
+# In[30]:
+
+fp = open('data/train_label.txt', 'w')
+fp.writelines([' '.join(map(str, labels))+'\n' for labels in train_labels])
+fp.close()
+
+fp = open('data/dev_label.txt', 'w')
+fp.writelines([' '.join(map(str, labels))+'\n' for labels in dev_labels])
+fp.close()
+
+fp = open('data/test_label.txt', 'w')
+fp.writelines([' '.join(map(str, labels))+'\n' for labels in test_labels])
+fp.close()
+
+
+
